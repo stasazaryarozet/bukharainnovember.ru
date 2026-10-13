@@ -894,8 +894,14 @@ def _terms_template_items(terms: "dict[str, Any]", land: "dict[str, Any]", curre
         return {name for _, name, _, _ in Formatter().parse(str(line.get("text") or "")) if name}
     fit = [ln for ln in (spec.get("lines") or []) if _needs(ln) <= known.keys()]
     first = [ln for i, ln in enumerate(fit) if ln.get("id") not in {m.get("id") for m in fit[:i]}]
-    values = {k: esc(v) for k, v in known.items()}
-    return [str(ln.get("text") or "").format_map(values) for ln in first]
+    # Поля-даты (ISO) печатаются словами тем же рядом месяцев, что и цена; неразборная дата — отказ.
+    import narrative_showcase as _ns
+    dates = {k: _ns.date_words(known[k]) for k in (spec.get("date_fields") or []) if k in known}
+    values = {k: esc(dates.get(k, v)) for k, v in known.items()}
+    text_of = lambda ln: str(ln.get("text") or "").format_map(values)
+    heads = [ln for ln in first if ln.get("into") not in {h.get("id") for h in first}]
+    parts = {h.get("id"): [text_of(ln) for ln in first if ln.get("into") == h.get("id")] for h in heads}
+    return [". ".join([text_of(h), *parts[h.get("id")]]) for h in heads]
 
 
 def _drop_block_close_period(paras: "list[str]") -> "list[str]":
@@ -1820,11 +1826,25 @@ def _colophon_keys(d: dict[str, Any], keys: Any = None) -> "tuple[str, ...] | No
     return None
 
 
-def _legal_footer(d: dict[str, Any], keys: Any = None) -> str:
+def _page_has_provider_checkout(d: dict[str, Any], slug: str) -> bool:
+    """Страница ПРОДАЕТ ЧЕРЕЗ ПРОВАЙДЕРА, если по ее адресу объявлено предложение (`offers[]`,
+    Inv-AG-offer-makes-commercial): кнопка оплаты предложения есть ссылка кассы провайдера
+    (`narrative_showcase._offer_start`, ручного пути нет). Свойство ВЫВОДИТСЯ из объявления
+    предложения, а не набирается флагом в данных страницы; событие, продающее заявкой и
+    ответным письмом, предложения по своему адресу не имеет."""
+    import narrative_showcase as _ns
+    return bool(_ns.offer_of(d, slug))
+
+
+def _legal_footer(d: dict[str, Any], keys: Any = None, *, provider_checkout: bool = True) -> str:
     """Project data.yaml.legal → quiet colophon-block. Pure projection: any
     field absent → omitted. Empty → ''. Identity fields live in
     text-site::legal_colophon — a new attribute is a Spec row, not a branch.
     yaml.legal.colophon (or keys=) selects a subset.
+
+    Строка способов оплаты относится к странице, ПРОДАЮЩЕЙ через провайдера
+    (`provider_checkout`, выводится `_page_has_provider_checkout`); умолчание — прежнее
+    поведение для страниц, чьи вызовы продажу не судят.
     """
     legal = (d.get("legal") or {}) if isinstance(d, dict) else {}
     if not legal:
@@ -1889,7 +1909,7 @@ def _legal_footer(d: dict[str, Any], keys: Any = None) -> str:
     # расходятся (прежде подвал печатал `legal.payment.methods` = [sbp] при кассе,
     # принимающей и карты). Нет объявленного провайдера — нет строки оплаты.
     pay: list[str] = []
-    if (legal.get("payment") or {}).get("provider"):
+    if provider_checkout and (legal.get("payment") or {}).get("provider"):
         import access_grant as _ag
         _live = _ag.acquiring_live(doc=d)
         if isinstance(_live, _ag.Confirmed) and _live.value is True:
@@ -3564,6 +3584,21 @@ def _day_subevent(d: dict[str, Any], ev: dict[str, Any], day: dict[str, Any], sl
     return obj
 
 
+def _offer_ranged_jsonld(ev: dict, fee: dict, offer: dict, start_iso: "str | None", owner: str) -> list:
+    """schema.org `Offer` на КАЖДЫЙ интервал постоянства ценового ряда события: безусловная цена
+    интервала и его границы (`validFrom` / `priceValidUntil`; у последнего интервала — начало поездки)."""
+    from offer_algebra import offer_timeline
+    row = {"id": str(ev.get("id") or ""), "discounts": fee["discounts"],
+           "price": {"value": fee["amount"], "currency": fee.get("currency", "")}}
+    tl = offer_timeline(row, owner=owner, offer_id=row["id"])
+    until = lambda sp: sp["to"].isoformat() if sp["to"] is not None else start_iso
+    return [{**{k: v for k, v in offer.items() if k != "priceValidUntil"},
+             "price": f"{(tl['price'] if sp['auto_floor'] is None else sp['auto_floor']):.2f}",
+             **({"validFrom": sp["from"].isoformat()} if sp["from"] is not None else {}),
+             **({"priceValidUntil": until(sp)} if until(sp) else {})}
+            for sp in tl["spans"]]
+
+
 def _event_jsonld(d: dict[str, Any], ev: dict[str, Any]) -> str:
     """schema.org structured-data — graph-resolved org + locations + audience.
 
@@ -3661,7 +3696,10 @@ def _event_jsonld(d: dict[str, Any], ev: dict[str, Any]) -> str:
         # trip begins). ISO yyyy-mm-dd is acceptable per Schema.org.
         if start_iso:
             offer["priceValidUntil"] = start_iso
-        obj["offers"] = offer
+        # Цена ряда (`discounts`) — функция времени: структурные данные называют безусловную цену
+        # КАЖДОГО интервала с его границами (тот же `offer_timeline`), а не базу как единственную.
+        obj["offers"] = (_offer_ranged_jsonld(ev, fee, offer, start_iso, str(d.get("_owner") or ""))
+                         if fee.get("discounts") else offer)
 
     if is_trip:
         # Build subEvents from days[] (Inv-DAYS-IS-RENDERING-SoT in
@@ -4002,16 +4040,32 @@ def _render_pricing_status(ctx: "_LandingCtx") -> "list[str]":
     pricing = m.pricing if hasattr(m, "pricing") else (m.get("pricing") or {})
     team_fee = (pricing or {}).get("team_fee") or {}
     amount = team_fee.get("amount")
+    # ЦЕНА ЕСТЬ ФУНКЦИЯ ВРЕМЕНИ, КОГДА У СТРОКИ ЦЕНЫ ЕСТЬ `discounts` — та же алгебра, что у
+    # `offers[]` рассказа-показа (`offer_algebra.offer_timeline`): окна, аддитивность,
+    # взаимоисключение `group`. Второго счета у события нет: оно строит предложение-строку
+    # из своей цены и зовет то же ядро.
+    ranged = bool(team_fee.get("discounts"))
     if amount is not None:
         amount_str, cur_glyph = money_parts(amount, team_fee.get("currency", ""))
         note = team_fee.get("note") or ""
+        if ranged:
+            import entitlement as _ent
+            import narrative_showcase as _ns
+            _ent.check_declared(ctx.d, team_fee["discounts"])    # ссылка на несуществующую категорию — ⊥ вслух
+            _eid = str(ev.get("id") or "") if isinstance(ev, dict) else ""
+            _row = {"id": _eid, "price": {"value": amount, "currency": team_fee.get("currency", "")},
+                    "discounts": team_fee["discounts"]}
+            _amount_html = _ns.offer_price_series_html(
+                _row, owner=str((ctx.d or {}).get("_owner") or ""), offer_id=_eid)
+        else:
+            _amount_html = (f'<div class="pricing-amount">{amount_str}{_NBSP}'
+                            f'<span class="currency">{cur_glyph}</span></div>')
         # Label-less display: amount + currency только. aria-label сохраняет
         # screen-reader semantics. Admin: «слово "стоимость" лишнее» — цифра
         # говорит сама.
         _pricing_aside = (
             '<aside class="pricing-display" aria-label="Стоимость">'
-            f'<div class="pricing-amount">{amount_str}{_NBSP}'
-            f'<span class="currency">{cur_glyph}</span></div>'
+            + _amount_html
             + (f'<div class="pricing-note">{_t(note)}</div>' if note else '')
             + '</aside>'
         )
@@ -4024,7 +4078,16 @@ def _render_pricing_status(ctx: "_LandingCtx") -> "list[str]":
 
     # Render-time placeholders for section prose ({{name}}) — admin 2026-05-11 (feedback.txt):
     # «[здесь автоматическая калькуляция] — для программного разрешения».
-    if amount is not None and isinstance(amount, (int, float)):
+    if ranged and amount is not None:
+        # {{team_fee}} / {{team_fee_half}} называют ОДНО число, а цена ряда — функция времени:
+        # статическая проза не пересчитывается на границе окна. ⊥ вслух, не устаревшее число.
+        _prose = " ".join(str(x) for sec in (ev.get("sections") or []) if isinstance(sec, dict)
+                          for x in (sec.get("intro"), sec.get("text")) if x)
+        if "{{team_fee" in _prose:
+            raise RuntimeError(
+                f"event {ev.get('id')!r}: проза использует {{{{team_fee}}}}, а цена задана рядом "
+                "`discounts` (функция времени) — плейсхолдер без значения; ссылайтесь на ценовой блок")
+    elif amount is not None and isinstance(amount, (int, float)):
         _half = amount / 2
         # ТА ЖЕ ТИПОГРАФИКА, ЧТО У ВИТРИНЫ: разряды — узкий неразрывный (U+202F), число и знак
         # валюты — неразрывный пробел; плейсхолдер подставляется в прозу готовым текстом.
@@ -4841,7 +4904,9 @@ def _render_legal(ctx: "_LandingCtx") -> "list[str]":
     if not suppress_legal:
         # Поля колофона — данные события (`colophon:`), как у статических страниц (fm.colophon):
         # блок «Об организаторе» уже называет лицо, и подвал Посадочной может не повторять имя.
-        legal_html = _legal_footer(d, keys=_raw_ev.get("colophon"))
+        legal_html = _legal_footer(
+            d, keys=_raw_ev.get("colophon"),
+            provider_checkout=_page_has_provider_checkout(d, str(_raw_ev.get("id") or "")))
         if legal_html:
             parts.append(legal_html)
     elif not suppress_legal_min:
@@ -5785,7 +5850,7 @@ def derived_slots(d: "dict[str, Any] | None") -> "dict[str, str]":
 
     Документ (оферта, политика) обязан называть те же деньги, что и карточка на
     витрине, и обязан называть их ПО-ЧЕЛОВЕЧЕСКИ — «2 500 ₽», а не «2500.00». Оба
-    требования выполняются ОДНИМ счетом (`narrative_showcase.offer_totals`), а не
+    требования выполняются ОДНИМ счетом (`offer_algebra.offer_totals`), а не
     вторым написанием арифметики в тексте документа.
 
     Квантифицировано по ряду предложений и ряду скидок: новое предложение и новая
@@ -5814,13 +5879,14 @@ def derived_slots(d: "dict[str, Any] | None") -> "dict[str, str]":
         _forms = _site_ed().get("access_term_forms") or []
         out["legal.access.min_term.text"] = f"{int(_months)} {_ns._plural(int(_months), _forms)}"
     from owner_data import owner_from_record as _owner_from_record
+    from offer_algebra import offer_totals as _offer_totals
 
     _owner = _owner_from_record(d)
     for i, off in enumerate(d.get("offers") or []):
         if not isinstance(off, dict):
             continue
         oid = str(off.get("id") or "")
-        t = _ns.offer_totals(off, owner=_owner, offer_id=oid)
+        t = _offer_totals(off, owner=_owner, offer_id=oid)
         money = lambda txt: f"{txt}{_NBSP}{t['glyph']}".strip()
         out[f"offers.{i}.price.text"] = money(t["price_text"])
         if oid:

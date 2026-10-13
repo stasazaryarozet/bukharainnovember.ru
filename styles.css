@@ -1318,6 +1318,41 @@ figure svg { display: block; width: 100%; height: auto; }
   max-width: 32em;
   order: 3;
 }
+/* ЦЕНОВОЙ РЯД СОБЫТИЯ (цена — функция времени; по блоку на интервал постоянства). Интервал —
+   вся ширина сетки: сумма, срок словами, итоговые цены заявительных категорий. Неактивный на
+   сборке интервал скрыт inline `display:none`, и штатный индикатор окна страницы его снимает. */
+.article-wrapper .pricing-display .pricing-span {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--sp-2);
+  order: 1;
+}
+.article-wrapper .pricing-display .pricing-was {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--muted);
+  font-size: 0.6em;
+  margin-right: var(--sp-2);
+}
+.article-wrapper .pricing-display .pricing-term,
+.article-wrapper .pricing-display .pricing-claims,
+.article-wrapper .pricing-display .pricing-claim-note {
+  font-family: var(--sans);
+  font-size: var(--fs-s);
+  line-height: var(--lh-body);
+  color: var(--ink);
+  margin: 0;
+}
+.article-wrapper .pricing-display .pricing-claims {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-1);
+}
+.article-wrapper .pricing-display .pricing-claim-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
 
 /* ── 5. Sections — Swiss grid rhythm, hairline boundaries ─────────── */
 
