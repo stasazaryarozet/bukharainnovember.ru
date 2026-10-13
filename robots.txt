@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://bukharainnovember.ru/sitemap.xml
