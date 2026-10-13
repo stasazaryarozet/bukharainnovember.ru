@@ -1327,6 +1327,9 @@ figure svg { display: block; width: 100%; height: auto; }
   gap: var(--sp-2);
   order: 1;
 }
+/* Внутри интервала порядок чтения — порядок разметки: цена, срок, категории, пояснение, будущая цена.
+   `order` самой цены (hero, 1) в сетке интервала не нужен и поднимал срок над ценой. */
+.article-wrapper .pricing-display .pricing-span .pricing-amount { order: 0; }
 .article-wrapper .pricing-display .pricing-was {
   text-decoration: line-through;
   text-decoration-thickness: 1px;
@@ -1334,8 +1337,10 @@ figure svg { display: block; width: 100%; height: auto; }
   font-size: 0.6em;
   margin-right: var(--sp-2);
 }
+.article-wrapper .pricing-display .pricing-was .currency { color: inherit; }
 .article-wrapper .pricing-display .pricing-term,
 .article-wrapper .pricing-display .pricing-claims,
+.article-wrapper .pricing-display .pricing-next,
 .article-wrapper .pricing-display .pricing-claim-note {
   font-family: var(--sans);
   font-size: var(--fs-s);
