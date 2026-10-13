@@ -4839,7 +4839,9 @@ def _render_legal(ctx: "_LandingCtx") -> "list[str]":
     _raw_ev = ctx.ev if isinstance(ctx.ev, dict) else {}
     suppress_legal_min = bool(_raw_ev.get("suppress_legal_min", False))
     if not suppress_legal:
-        legal_html = _legal_footer(d)
+        # Поля колофона — данные события (`colophon:`), как у статических страниц (fm.colophon):
+        # блок «Об организаторе» уже называет лицо, и подвал Посадочной может не повторять имя.
+        legal_html = _legal_footer(d, keys=_raw_ev.get("colophon"))
         if legal_html:
             parts.append(legal_html)
     elif not suppress_legal_min:
