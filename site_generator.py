@@ -3236,12 +3236,15 @@ def p_site(d: dict[str, Any]) -> str:
 # non-event content.
 
 _EVENT_SLUG_RE = _re.compile(r"[a-z0-9_-]+")
+#: Slot in `lead_capture.consent_text` where the Policy link goes (text and address come from declarations).
+_CONSENT_POLICY_SLOT = "{privacy_policy}"
 
 
 def event_signup_form(slug: str, label: str, email_fallback: str,
                       cta_label: str = "Оставить email",
                       lead_capture: dict[str, Any] | None = None,
-                      transport_url: str = "") -> str:
+                      transport_url: str = "",
+                      privacy_url: str = "") -> str:
     """Lead-capture form с direct POST к transport_url. Per
     `Inv-LDG-FORMS-NO-MAILTO-LOSSY-FALLBACK` (text/landing.md) — no mailto
     fallback (silently lost leads — admin 2026-05-13 empirical: 3h live → 0
@@ -3268,7 +3271,7 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
     _lc0 = lead_capture if isinstance(lead_capture, dict) else {}
     _ext_url = str(_lc0.get("form_url") or "").strip()
     if _ext_url and str(_lc0.get("provider") or "").strip():
-        _u = _t(_ext_url)
+        _ext_href = _t(_ext_url)
         _head = _t(str(_lc0.get("submit_label") or cta_label))
         # form_id: explicit ⊔ derived from …/u/<id>… (single source; provider-agnostic).
         _fid = str(_lc0.get("form_id") or "").strip()
@@ -3286,10 +3289,10 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
             f'<section class="signup" id="signup">'
             f'<h2>{_head}</h2>'
             f'{_embed}'
-            f'<iframe src="{_u}" frameborder="0"{_name} loading="lazy" '
+            f'<iframe src="{_ext_href}" frameborder="0"{_name} loading="lazy" '
             f'style="width:100%;min-height:560px;border:0;border-radius:8px" '
             f'title="{_head}"></iframe>'
-            f'<p class="signup-ext-fallback"><a href="{_u}" target="_blank" '
+            f'<p class="signup-ext-fallback"><a href="{_ext_href}" target="_blank" '
             f'rel="noopener">Открыть форму в новой вкладке</a></p>'
             f'</section>'
         )
@@ -3351,8 +3354,21 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
         lbl_about_h = _typo(_about_hint)
     else:
         lbl_about = lbl_about_h = ""
-    lbl_consent = _typo(str(lc.get("consent_text") or
-                            "Обрабатывайте персональные данные").strip())
+    consent_raw = str(lc.get("consent_text") or "Обрабатывайте персональные данные").strip()
+    if _CONSENT_POLICY_SLOT in consent_raw:
+        # The label names the Policy: its link text is the SAME declaration the inline notice uses
+        # (Inv-COOKIE-banner.privacy_link_text) and its address is legal.privacy_url — no second copy.
+        # A consent text that promises the Policy with nowhere to send the reader is a 152-ФЗ defect.
+        link_text = str((_spec_ed("Inv-COOKIE-banner") or {}).get("privacy_link_text") or "")
+        href = _u(privacy_url)
+        if not (link_text and href):
+            raise ValueError("consent_text names {privacy_policy} but legal.privacy_url or "
+                             "Inv-COOKIE-banner.privacy_link_text is not declared")
+        head, _, tail = consent_raw.partition(_CONSENT_POLICY_SLOT)
+        lbl_consent = _t(head + link_text + tail)                       # attribute-safe: aria-label
+        lbl_consent_html = f'{_t(head)}<a href="{href}">{_t(link_text)}</a>{_t(tail)}'
+    else:
+        lbl_consent = lbl_consent_html = _typo(consent_raw)
     lbl_or      = _typo("Или напишите:")
     _about_row = (
         f'<label class="signup-label" for="su-note">{lbl_about}'
@@ -3398,7 +3414,7 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
       <input type="checkbox" id="su-consent" name="consent" required
              aria-required="true"
              aria-label="{lbl_consent}">
-      <span>{lbl_consent}</span>
+      <span>{lbl_consent_html}</span>
     </label>
     <button class="signup-btn" type="submit" id="su-btn">{cta_html}</button>
   </form>
@@ -4565,6 +4581,40 @@ def _render_open_questions(ctx: "_LandingCtx") -> "list[str]":
     return parts
 
 
+def owner_link(d: dict[str, Any], address: str) -> str:
+    """Absolute address of the owner's own page `address` (site canonical + address), or `address` itself
+    when it is not an owner-projection page or the owner has no canonical.
+
+    ONE function for every link a landing makes to the owner's pages (/legal/, /privacy/): such a page has
+    ONE home — the owner's site — so on the publication domain (bukharainnovember.ru) a relative href
+    points at nothing, and a copy there would be a second home (an orphan of the world). The footer's links
+    (`owner_links_absolute`, the publish pass) and the consent label's link both come through here."""
+    canon = str(_canonical(d) or "").rstrip("/")
+    own = {pr.address for pr in owner_projections(d) if pr.label not in ("site", "404")}
+    return f"{canon}{address}" if canon and address in own else address
+
+
+def owner_links_absolute(d: dict[str, Any], html: str) -> str:
+    """The publish pass: every `href="<owner page>"` in a landing → `owner_link` (pure on (owner, html))."""
+    own = [pr.address for pr in owner_projections(d)
+           if pr.label not in ("site", "404") and f'href="{pr.address}"' in html]
+    return _functools.reduce(
+        lambda out, a: out.replace(f'href="{a}"', f'href="{owner_link(d, a)}"'), own, html)
+
+
+def signup_transport(lead_capture: Any) -> str:
+    """The address a native signup form posts to — THE one derivation, read by the form generator, the
+    published `signup.json` (its JS overrides the form action with it) and the pre-publish probe: three
+    readers of one fact. Derived from where the law lets the route run (edge_route_control.
+    transport_url); `lead_capture.route` overrides the default `/lead`. An external-form provider needs
+    no edge transport (""). Not derivable ⇒ raises (TransportUnderivable): never an empty or stale action."""
+    lc = lead_capture if isinstance(lead_capture, dict) else {}
+    if lc.get("provider") and lc.get("form_url"):
+        return ""
+    from edge_route_control import transport_url
+    return transport_url(str(lc.get("route") or "/lead"))
+
+
 def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     """Phase (i) — `<section class="signup-wrap">` + the embedded
     `<form id="signup-form">` (built by `event_signup_form`).
@@ -4596,19 +4646,11 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     # transport URL (CF Worker /lead). Resolved via secrets_manager
     # signup_capture_url (canonical lead endpoint, configurable per
     # deployment). No-JS submit lands at Worker; JS upgrades AJAX UX.
-    _transport_url = ""
-    try:
-        import sys as _sys, os as _os
-        # НЕ хардкодить дом: путь приходит из СВОЕГО расположения (модуль
-        # знает, где он лежит) — иначе archive-mode теряет изоляцию и
-        # подтягивает код с ОТСТАВШЕГО диска реплики (Σ 2026-07-11:
-        # деплой из архива импортировал старый broadcast_relation с FP).
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from secrets_manager import secrets as _secrets
-        _transport_url = _secrets.get_key("signup_capture_url") or ""
-    except Exception as _e:
-        _LOG.warning("signup_capture_url unread (%s) — empty transport", type(_e).__name__)
-        _transport_url = ""
+    # The address is DERIVED from where the law lets the route run (edge_route_control.transport_url:
+    # /lead carries personal data ⇒ not foreign ⇒ the RF entry + its path carrier), not read from a
+    # stored secret that names one realizer. Not derivable ⇒ raise: a form with an empty or guessed
+    # action loses leads silently. An external-form provider needs no edge transport.
+    _transport_url = signup_transport(lc)
     parts.append(event_signup_form(
         slug,
         ev_label,
@@ -4616,6 +4658,7 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
         cta_label=s_cta,
         lead_capture=lc if isinstance(lc, dict) else None,
         transport_url=_transport_url,
+        privacy_url=owner_link(ctx.d, str(((ctx.d.get("legal") or {}) if isinstance(ctx.d, dict) else {}).get("privacy_url") or "")),
     ))
     # Сообщение о персональных данных — У ФОРМЫ, единственное место
     # (admin 2026-07-11); страничный overlay отключён всюду (_layout).
