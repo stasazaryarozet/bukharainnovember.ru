@@ -837,21 +837,13 @@ def _genus_name(ev: "dict[str, Any] | None") -> str:
 
 
 def _role_value(ev: "dict[str, Any] | None", role: str, key: str) -> Any:
-    """СВОЙСТВО РОЛИ секции: родовое (`landing.roles` Спеки рода), поверх него — событийное
-    (`role_overrides: {<роль>: {<свойство>: …}}` у самого события). Нет роли или свойства — None."""
+    """СВОЙСТВО РОЛИ секции — у рода (`landing.roles` Спеки рода события). Свойство рода есть
+    закон всего рода, а не умолчание, которое издание подавляет у себя. Нет роли или свойства — None."""
     if not role:
         return None
-    over = ((ev or {}).get("role_overrides") or {}).get(role) if isinstance(ev, dict) else None
-    if isinstance(over, dict) and key in over:
-        return over[key]
     land = _genus_landing(_genus_name(ev))
     return next((r.get(key) for r in ((land or {}).get("roles") or [])
                  if isinstance(r, dict) and r.get("id") == role), None)
-
-
-def _role_declares(ev: "dict[str, Any] | None", role: str, flag: str) -> bool:
-    """Объявляет ли РОЛЬ секции флаг `flag` (род события, поверх него — само событие: `_role_value`)."""
-    return bool(_role_value(ev, role, flag))
 
 
 def _genus_banner(d: dict[str, Any], ev: "dict[str, Any] | None") -> str:
@@ -887,15 +879,47 @@ def _event_local(ev: "dict[str, Any] | None", key: str,
     return class_value
 
 
+_ISO_DAYS_RE = _re.compile(r"^(-?)P(\d+)D$")
+
+
+def _terms_derived(ev: "dict[str, Any]", spec: "dict[str, Any]") -> "dict[str, Any]":
+    """ПОЛЯ УСЛОВИЙ, ВЫВЕДЕННЫЕ ИЗ СОБЫТИЯ (`landing.terms.derived` рода): `{from: start, offset: <ISO 8601
+    дней>}` — начало горизонта события (`skoro.horizon`, та же дверь, что у стадии) со смещением;
+    `{from: <путь.в.событии>}` — значение поля события. Поле, которое нельзя вывести (нет начала, нет
+    пути), не печатается — его строка шаблона молчит, а не ставит заглушку. Неразборное смещение —
+    отказ вслух: это ошибка Спеки, а не данных."""
+    import datetime as _dt
+    import skoro as _sk
+    def one(rule: "dict[str, Any]") -> Any:
+        src = str(rule.get("from") or "")
+        if src == "start":
+            h = _sk.horizon(ev)
+            if not h:
+                return None
+            m = _ISO_DAYS_RE.match(str(rule.get("offset") or "P0D"))
+            if not m:
+                raise ValueError(f"landing.terms.derived: смещение {rule.get('offset')!r} не есть ISO 8601 (±PnD)")
+            days = int(m.group(2)) * (-1 if m.group(1) else 1)
+            return (h[0].date() + _dt.timedelta(days=days)).isoformat()
+        from functools import reduce
+        return reduce(lambda n, k: n.get(k) if isinstance(n, dict) else None,
+                      [x for x in src.split(".") if x], ev)
+    vals = {k: one(r) for k, r in ((spec.get("derived") or {}).items()) if isinstance(r, dict)}
+    return {k: v for k, v in vals.items() if v not in (None, "")}
+
+
 def _terms_template_items(terms: "dict[str, Any]", land: "dict[str, Any]", currency: Any,
-                          esc: "Callable[[Any], str]") -> "list[str]":
+                          esc: "Callable[[Any], str]", *, ev: "dict[str, Any]") -> "list[str]":
     """УСЛОВИЯ ИЗ ДАННЫХ СОБЫТИЯ по шаблону рода (`landing.terms`): строка печатается, когда известны
     ВСЕ поля её шаблона (список `requires` выводится из самого текста — второго объявления нет); из
     строк с одним `id` берётся первая применимая. Суффикс валюты — из таблицы рода по валюте цены
-    события. Значения событий экранируются `esc`; разметка шаблона — доверенная (Спека)."""
+    события. Значения событий экранируются `esc`; разметка шаблона — доверенная (Спека). Поля,
+    выводимые из события (`derived`, `_terms_derived`), ниже явных полей `terms`: явное значение
+    события побеждает вывод только тогда, когда событие его объявило."""
     from string import Formatter
     spec = (land or {}).get("terms") or {}
     known = {**(spec.get("defaults") or {}),
+             **_terms_derived(ev, spec),
              **{k: v for k, v in (terms or {}).items() if v not in (None, "")},
              "currency_suffix": (spec.get("currency_suffix") or {}).get(
                  str(currency or "").upper(), "")}
@@ -3265,7 +3289,8 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
                       cta_label: str = "Оставить email",
                       lead_capture: dict[str, Any] | None = None,
                       transport_url: str = "",
-                      privacy_url: str = "", *, labelled_by: str) -> str:
+                      privacy_url: str = "", *, labelled_by: str,
+                      transports: "list[dict[str, Any]] | None" = None) -> str:
     """Lead-capture form с direct POST к transport_url. Своего заголовка у формы НЕТ: её называет
     заголовок секции зовущего (`labelled_by` — его id), иначе одно слово стоит трижды
     (h2 «Заявка» · h3 · кнопка — принципал 2026-10-14). Per Per
@@ -3277,6 +3302,11 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
     `cta_label` parametrises the heading + button text. `transport_url` —
     canonical lead endpoint (resolved by caller от secrets_manager
     signup_capture_url). Slug validation: must match `[a-z0-9_-]+`.
+
+    `transports` — the ordered list the JS walks (`edge_route_control.form_transports`: lawful first,
+    then a principal-sanctioned fallback that states `sanction=<id>` in the body); the script itself is
+    `lead_form_client.client_js()` and carries no address, timeout or exception literal. No list ⇒ the
+    one `transport_url` with no fallback.
     """
     if not isinstance(slug, str) or not _EVENT_SLUG_RE.fullmatch(slug):
         raise ValueError(
@@ -3419,12 +3449,27 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
         f'<input type="hidden" name="variant" value="{_lc_variant}">'
     ) if _lc_edition else ""
     _lb = _t(labelled_by)
+    import lead_form_client as _lfc
+    _client_js = _lfc.client_js()
+    import html as _html
+    # attribute escape only — the typographer (_t) would rewrite JSON quotes into «» and break the list
+    _mail_attr = _html.escape(email_fallback, quote=True)
+    # the script's words: Spec text/landing.md (Inv-LDG-FORMS-NO-MAILTO-LOSSY-FALLBACK.client_messages)
+    _msg_attrs = _lfc.message_attrs(
+        (_spec_ed("Inv-LDG-FORMS-NO-MAILTO-LOSSY-FALLBACK") or {}).get("client_messages") or {})
+    _transports_attr = _html.escape(_json.dumps(
+        transports if transports is not None else
+        ([{"url": transport_url, "timeout_ms": None, "sanction": None}] if transport_url else []),
+        ensure_ascii=False), quote=True)
     return f'''<section id="signup" class="signup" aria-labelledby="{_lb}">
   <form id="signup-form" class="signup-form" novalidate
         aria-labelledby="{_lb}"
         {_action_attr}
         method="post" enctype="application/x-www-form-urlencoded"
-        data-slug="{slug_t}">
+        data-slug="{slug_t}"
+        data-transports="{_transports_attr}"
+        data-mail="{_mail_attr}"
+        {_msg_attrs}>
     {_hidden_inputs}
     <label class="signup-label" for="su-name">{lbl_name}</label>
     <input class="signup-input" id="su-name" name="name"
@@ -3444,43 +3489,7 @@ def event_signup_form(slug: str, label: str, email_fallback: str,
   <div class="signup-msg" id="signup-msg" role="status" aria-live="polite"></div>
   <noscript><p class="signup-note">{lbl_or} <a href="mailto:{email_q}">{_t(email_fallback)}</a></p></noscript>
 <script>
-/* AJAX-upgrade: FormData captures ALL named inputs (incl. hidden edition+
-   variant). consent checkbox state forced к "true" canonical. Both no-JS
-   и JS paths persist via Worker KV (Inv-LDG-FORMS-NO-MAILTO). */
-(function(){{
-  var f=document.getElementById("signup-form");
-  if(!f) return;
-  var btn=document.getElementById("su-btn");
-  var msg=document.getElementById("signup-msg");
-  var transport=f.getAttribute("action") || "";
-  /* Optional /<slug>/signup.json override — single SoT для transport_url. */
-  fetch("/{slug_t}/signup.json").then(function(r){{return r.ok?r.json():null}})
-    .then(function(d){{if(d&&d.transport_url)transport=d.transport_url;}})
-    .catch(function(){{}});
-  f.addEventListener("submit",function(e){{
-    var name=f.name.value.trim(),email=f.email.value.trim();
-    if(name.length<2){{e.preventDefault();f.name.focus();return;}}
-    if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)){{e.preventDefault();f.email.focus();return;}}
-    if(!f.consent.checked){{e.preventDefault();f.consent.focus();return;}}
-    if(!transport)return; /* no-JS path: form action handles it */
-    e.preventDefault();
-    btn.disabled=true;btn.textContent="отправка...";
-    var fd=new FormData(f);fd.set("consent","true");
-    fd.set("slug",f.dataset.slug||"");
-    fetch(transport,{{method:"POST",
-      headers:{{"Content-Type":"application/x-www-form-urlencoded"}},
-      body:new URLSearchParams(fd).toString()}})
-      .then(function(r){{return r.json()}})
-      .then(function(d){{
-        if(d&&d.ok){{f.style.display="none";
-          msg.innerHTML="Спасибо!<br>Свяжемся.";
-        }}else{{msg.textContent="Ошибка. Попробуйте ещё раз или напишите на {email_q}.";
-          btn.disabled=false;btn.textContent={cta_js};}}
-      }})
-      .catch(function(){{msg.textContent="Ошибка сети. Email ниже работает без формы.";
-        btn.disabled=false;btn.textContent={cta_js};}});
-  }});
-}})();
+{_client_js}
 </script>
 </section>'''
 
@@ -4093,7 +4102,7 @@ def _render_pricing_status(ctx: "_LandingCtx") -> "list[str]":
             _ent.check_declared(ctx.d, team_fee["discounts"])    # ссылка на несуществующую категорию — ⊥ вслух
             _eid = str(ev.get("id") or "") if isinstance(ev, dict) else ""
             _row = {"id": _eid, "price": {"value": amount, "currency": team_fee.get("currency", "")},
-                    "discounts": team_fee["discounts"]}
+                    "discounts": team_fee["discounts"], "price_moment": team_fee.get("price_moment")}
             _amount_html = _ns.offer_price_series_html(
                 _row, owner=str((ctx.d or {}).get("_owner") or ""), offer_id=_eid)
         else:
@@ -4252,13 +4261,9 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
                 parts.append(_render_programme_block())
                 programme_inserted = True
             continue
-        # Повтор цены — перед секцией, РОЛЬ которой это объявляет (admin 2026-05-14: «важно сразу
-        # называть сумму; принимаю решение дублировать элемент»). Роль — объявление автора, флаг
-        # `price_repeat` — у самого рода (`landing.roles`); заголовок — слово автора и поведением
-        # не управляет. Здесь стоял литерал заголовка `"Входит:"`: переименование секции молча
-        # снимало повтор, а событие без этого слова не могло его получить.
-        if ctx.pricing_html and _role_declares(ctx.ev, role, "price_repeat"):
-            parts.append(ctx.pricing_html)
+        # Повтора цены перед секцией нет: цена названа в шапке один раз (принципал 2026-10-14: «Ни в
+        # чем не должно быть избыточности»; прежнее решение admin 2026-05-14 «дублировать элемент»
+        # снято). Был флаг роли `price_repeat` — его объявлял только род design-travel.
         parts.append(f"<section><h2>{_t(t)}</h2>" if t and t.strip() else "<section>")
         # admin: «one breath per line» (per-line typography) + markdown links; {{name}}
         # placeholders resolved here. A section that is prose-only and «крупнее абзаца»
@@ -4385,7 +4390,7 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
         _price = (m.pricing if hasattr(m, "pricing") else m.get("pricing")) or {}
         terms_items = _terms_template_items(
             _terms_decl, _genus_land, (_price.get("team_fee") or {}).get("currency"),
-            lambda v: _t(str(v)))
+            lambda v: _t(str(v)), ev=_raw_ev)
     # Payment: event-local `payment` overrides event_policy.design_travel default.
     # Inv-FACT: only state what System Memory contains. Remainder-timing
     # NOT in policy → not stated. Will surface if admin extends policy.
@@ -4625,45 +4630,43 @@ _NAME_GAP = "[ \u00a0\u202f]+"
 
 
 def _owner_name_forms(d: dict[str, Any], pid: str) -> "list[str]":
-    """Написания имени человека графа в тексте страницы: имя и его творительный падеж
-    (`people.<id>.name` · `name_instrumental`) и тот же набор с фамилией прописными (кредит-строка
-    заголовка: «Ольгой РОЗЕТ»). Выводятся из данных человека, не набраны."""
+    """Написания имени человека графа в тексте страницы: КАЖДОЕ объявленное поле имени
+    (`people.<id>.name*` — имя и его падежи, сколько их объявлено: новый падеж есть строка данных,
+    не правка здесь) и тот же набор с фамилией прописными (кредит-строка заголовка: «Ольгой РОЗЕТ»)."""
     p = (d.get("people") or {}).get(pid) or {}
-    base = [str(p.get(k) or "").strip() for k in ("name", "name_instrumental")]
+    base = [str(v or "").strip() for k, v in p.items()
+            if str(k) == "name" or str(k).startswith("name_")]
     caps = lambda n: " ".join([*n.split()[:-1], n.split()[-1].upper()]) if len(n.split()) > 1 else n
     return sorted({f for n in base if n for f in (n, caps(n))}, key=len, reverse=True)
 
 
-def owner_name_links(d: dict[str, Any], organizers: "list[str]", html: str) -> str:
+def owner_name_links(d: dict[str, Any], html: str, *, here: str) -> str:
     """ИМЯ ВЛАДЕЛЬЦА В ТЕКСТЕ СТРАНИЦЫ — ССЫЛКА НА ЕГО САЙТ («Везде, где "Ольга Розет" — ссылка на
     olgarozet.ru», принципал 2026-10-14). ОДНА функция над готовой разметкой, как `owner_links_absolute`:
     каждое написание (`_owner_name_forms`) организатора-владельца в ТЕКСТОВЫХ узлах фрагмента тела, ещё не
     стоящее в ссылке, оборачивается ссылкой на канон владельца (`_canonical`, тот же адрес, что
     у ссылок подвала), — поэтому прозу, заголовок-кредит, карточку организатора и любой будущий
-    абзац покрывает один проход, а не по месту. Теги, атрибуты, скрипты — не текст."""
+    абзац покрывает один проход, а не по месту. Теги, атрибуты, скрипты — не текст.
+    ЗАКОН ВЛАДЕЛЬЦА, А НЕ СОБЫТИЯ, И ДЕЙСТВУЕТ ОН ВНЕ ЕГО САЙТА (принципал 2026-10-14: «Ольга Розет должна
+    быть ссылкой всюду, кроме того, что опубликовано на самом сайте Ольги»): предикат — хост страницы
+    (`here`) отличен от хоста канона владельца. Зов — из проекции публикации вне сайта владельца
+    (`broadcast_html.update_landing`, рядом с `owner_links_absolute`), флага нет; на хосте канона функция
+    тождественна."""
     owner = str(d.get("_owner") or "")
     canon = str(_canonical(d) or "").rstrip("/")
-    forms = [f for pid in (organizers or []) if pid == owner for f in _owner_name_forms(d, pid)]
-    if not (owner and canon and forms):
+    forms = _owner_name_forms(d, owner) if owner else []
+    if not (canon and forms) or _urlsplit(str(here or "")).netloc in ("", _urlsplit(canon).netloc):
         return html
     pat = _re.compile("|".join(_NAME_GAP.join(_re.escape(w) for w in f.split()) for f in forms))
     href = _u(canon + "/")
-    skip = {"a", "script", "style", "title", "button", "textarea"}   # узлы, чей текст ссылкой не становится
-    depth: "dict[str, int]" = {}
-    out: "list[str]" = []
-    # imperative: однопроходный обход токенов разметки с накоплением глубины вложенности в `skip` —
-    # порядок токенов и есть предмет (текст внутри <a> не оборачивается), свертки без состояния нет.
-    for tok in _re.split(r"(<[^>]*>)", html):
-        m = _re.match(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)", tok) if tok.startswith("<") else None
-        if m:
-            name, closing = m.group(2).lower(), bool(m.group(1))
-            if name in skip and not tok.endswith("/>"):
-                depth[name] = max(0, depth.get(name, 0) + (-1 if closing else 1))
-            out.append(tok)
-        else:
-            out.append(tok if not tok or any(depth.get(t, 0) for t in skip)
-                       else pat.sub(lambda mm: f'<a href="{href}">{mm.group(0)}</a>', tok))
-    return "".join(out)
+    link = lambda text: pat.sub(lambda mm: f'<a href="{href}">{mm.group(0)}</a>', text)
+    # Разметка размечена ОДНИМ разбором: (1) элемент, текст которого ссылкой не становится, — целиком:
+    # сырой текст HTML (script, style, textarea, title: внутри него «<script» в строке JS — текст, и
+    # пошаговый счёт тегов сбивался до конца документа — замер 2026-10-14, карточка организатора
+    # после встроенного скрипта ссылки не получала) и уже стоящие <a>/<button> (<a> не вкладывается
+    # по HTML); (2) прочий тег; (3) текст — только он и оборачивается.
+    unit = _re.compile(r"(?is)(<(script|style|textarea|title|a|button)\b[^>]*>.*?</\2\s*>)|(<[^>]*>)|([^<]+)")
+    return unit.sub(lambda m: link(m.group(4)) if m.group(4) else m.group(0), html)
 
 
 def owner_links_absolute(d: dict[str, Any], html: str) -> str:
@@ -4685,6 +4688,16 @@ def signup_transport(lead_capture: Any) -> str:
         return ""
     from edge_route_control import transport_url
     return transport_url(str(lc.get("route") or "/lead"))
+
+
+def signup_transports(lead_capture: Any) -> "list[dict[str, Any]]":
+    """The ordered transports a native form walks (`edge_route_control.form_transports`): its first IS
+    `signup_transport`, the rest are sanctioned fallbacks (laws.yaml exceptions). External provider ⇒ []."""
+    lc = lead_capture if isinstance(lead_capture, dict) else {}
+    if lc.get("provider") and lc.get("form_url"):
+        return []
+    from edge_route_control import form_transports
+    return form_transports(str(lc.get("route") or "/lead"))
 
 
 def _render_signup(ctx: "_LandingCtx") -> "list[str]":
@@ -4730,6 +4743,7 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
         cta_label=s_cta,
         lead_capture=lc if isinstance(lc, dict) else None,
         transport_url=_transport_url,
+        transports=signup_transports(lc),
         privacy_url=owner_link(ctx.d, str(((ctx.d.get("legal") or {}) if isinstance(ctx.d, dict) else {}).get("privacy_url") or "")),
         labelled_by="signup-h",
     ))
@@ -5151,9 +5165,6 @@ def p_event_landing(d: dict[str, Any], ev: dict[str, Any]) -> str:
     ]
 
     body = f'  <article class="article-wrapper">{"".join(parts)}</article>'
-    # Имя владельца в тексте — ссылка на его сайт, когда событие это объявляет (данные события).
-    if isinstance(ev, dict) and ev.get("link_owner_name"):
-        body = owner_name_links(d, list(org_ids), body)
 
     lead_text = m.lead if hasattr(m, "lead") else m.get("lead", "")
     # SEO meta-description must be a single string — collapse paragraphs
