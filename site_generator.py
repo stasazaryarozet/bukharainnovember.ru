@@ -4139,7 +4139,7 @@ def _render_pricing_status(ctx: "_LandingCtx") -> "list[str]":
         _pricing_aside = (
             '<aside class="pricing-display" aria-label="Стоимость">'
             + _amount_html
-            + (f'<div class="pricing-note">{_t(note)}</div>' if note else '')
+            + (f'<div class="pricing-note">{ctx.breath(note, _t)}</div>' if note else '')
             + '</aside>'
         )
         parts.append(_pricing_aside)
@@ -4311,7 +4311,7 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
             # `data-marker` каждого пункта; внешний вид знака — дело стилей.
             _mk = _role_value(ctx.ev, role, "marker")
             _mk_attr = f' data-marker="{_t(str(_mk))}"' if _mk else ""
-            lis = "".join(f"<li{_mk_attr}>{h_aug(x)}</li>" for x in items)
+            lis = "".join(f"<li{_mk_attr}>{_breath(x, h_aug)}</li>" for x in items)
             parts.append(f"<ul>{lis}</ul>")
         parts.append("</section>")
         # Insert programme (days) right after «Тема» if it exists; else
@@ -5144,11 +5144,15 @@ def p_event_landing(d: dict[str, Any], ev: dict[str, Any]) -> str:
     inline = _inline
     h_aug = _h
 
-    def _breath(text: object) -> str:
+    def _breath(text: object, render: "Callable[[str], str] | None" = None) -> str:
         """admin's «one breath per line»: each \\n is a DELIBERATE break, so typography
         (NBSP-glue, hanging-words) is applied PER LINE, never across the <br> — a one-word
-        pivot line can't glue forward. Used for lead / section prose / sub-event descriptions."""
-        return "<br>".join(inline(_ln) for _ln in str(text).split("\n"))
+        pivot line can't glue forward. ОДИН закон для ВСЕЙ прозы посадочной — lead, абзацы
+        разделов, описания под-событий, пункты списков, примечание к цене; `render` — функция
+        строки носителя (`inline` по умолчанию; `h_aug` для курированной разметки пунктов, `_t`
+        для примечания). Замер 2026-10-15: пункты и примечание шли мимо закона — семантические
+        переносы в них схлопывались браузером в пробел."""
+        return "<br>".join((render or inline)(_ln) for _ln in str(text).split("\n"))
 
     org_ids = m.organizers if hasattr(m, "organizers") else (m.get("organizers") or [])
 
