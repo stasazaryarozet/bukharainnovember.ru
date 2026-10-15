@@ -2276,7 +2276,7 @@ def _layout(d: dict[str, Any], *, title: str, description: str, body: str,
             canonical: str | None = None,
             extra_head: str = "", footer: bool = True, structured: str | None = None,
             surface: str = "", cookie_banner_enabled: bool = False, doc_menu: str = "",
-            banner: str = "", slug: str = "", card_image: str = "",
+            banner: str = "", slug: str = "", card_image: str = "", event: str = "",
             og_image_size: "tuple[int, int] | None" = None, og_image_alt: str = "") -> str:
     """`banner` — ШАПКА СТРАНИЦЫ, И ОНА НЕ ЕСТЬ СОДЕРЖАНИЕ.
 
@@ -2406,6 +2406,9 @@ def _layout(d: dict[str, Any], *, title: str, description: str, body: str,
     # `editorial` = event-landings + static-pages (concrete-paper / Outremer).
     # Single SoT — no parallel `:root`/`:has(.article-wrapper)` cascade hack.
     surface_attr = f' data-surface="{_t(surface)}"' if surface else ''
+    # `data-event` — АДРЕС СОБЫТИЯ на корне: токены издания (Спека `event-<id>.md`, scope по этому
+    # атрибуту) действуют только на странице своего события, хотя файл токенов владельца общий.
+    surface_attr += f' data-event="{_t(event)}"' if event else ''
     _page = f"""<!DOCTYPE html>
 <html lang="{_t(lang)}"{surface_attr}>
 <head>
@@ -3969,6 +3972,8 @@ def _render_header(ctx: "_LandingCtx") -> "list[str]":
         or _genus_banner(d, ev)
     if top_banner_text:
         parts.append(f'<p class="top-banner">{_t(_text_close_no_period(top_banner_text))}</p>')
+    # Полоса шапки — слот `hero_banner` события (картинка, оформление — стили слота).
+    parts.extend(filter(None, (_render_art_slot(ctx, "hero_banner"),)))
 
     # Cover-line — schema-driven catalogue eyebrow ABOVE h1. ALL-CAPS
     # tracked metadata strip («ДИЗАЙН-ПУТЕШЕСТВИЕ · 4 ДНЯ · ДО 12 ЧЕЛОВЕК
@@ -4268,6 +4273,9 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
     # Sections — schema variants (pair / text / items / intro).
     # Programme (days) inserts after «Тема» if present, else after first
     # section, else at top — narrative arc «концепт → программа → детали».
+    # Первая секция каждой роли — чистая функция списка секций (а не набор с мутацией в цикле).
+    _role_of = [(x.role if hasattr(x, "role") else x.get("role", "")) for x in sections]
+    _first_of_role = {r: i for i, r in reversed(list(enumerate(_role_of))) if r}
     for idx, sec in enumerate(sections):
         t = sec.title if hasattr(sec, "title") else sec.get("title", "")
         intro = sec.intro if hasattr(sec, "intro") else sec.get("intro", "")
@@ -4289,6 +4297,8 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
         # Повтора цены перед секцией нет: цена названа в шапке один раз (принципал 2026-10-14: «Ни в
         # чем не должно быть избыточности»; прежнее решение admin 2026-05-14 «дублировать элемент»
         # снято). Был флаг роли `price_repeat` — его объявлял только род design-travel.
+        # Граница глав: разделитель рода стоит перед ПЕРВОЙ секцией роли (повторная роль — та же глава).
+        parts.extend(filter(None, (_dividers_before(ctx, role) if _first_of_role.get(role) == idx else "",)))
         parts.append(f"<section><h2>{_t(t)}</h2>" if t and t.strip() else "<section>")
         # admin: «one breath per line» (per-line typography) + markdown links; {{name}}
         # placeholders resolved here. A section that is prose-only and «крупнее абзаца»
@@ -4747,6 +4757,8 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     s_title = signup.title if hasattr(signup, "title") else signup.get("title", "Записаться")
     s_note = signup.note if hasattr(signup, "note") else signup.get("note", "")
     s_cta = signup.cta_label if hasattr(signup, "cta_label") else signup.get("cta_label", "Оставить email")
+    # Разделители вокруг заявки — слоты `signup_top`/`signup_bottom` события (разные: принципал 2026-10-14).
+    parts.append(_render_art_slot(ctx, "signup_top"))
     parts.append(f'<section class="signup-wrap"><h2 id="signup-h">{inline(s_title)}</h2>')
     if s_note:
         parts.append(f'<p>{inline(s_note)}</p>')
@@ -4778,6 +4790,7 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     if _consent:
         parts.append(_consent)
     parts.append("</section>")
+    parts.append(_render_art_slot(ctx, "signup_bottom"))
     return parts
 
 
@@ -4989,44 +5002,97 @@ def _render_about_organizer(ctx: "_LandingCtx") -> "list[str]":
     return parts
 
 
-def _render_landing_footer_image(ctx: "_LandingCtx") -> "list[str]":
-    """Phase between content blocks and legal footer — single editorial image
-    «в самый низ Посадочной». Admin 2026-05-13: «максимально конгруэтная
-    длинная ваза на белом фоне» + «футер ночной темы» (companion-piece для
-    night surface). Optional — rendered iff ev.landing_footer_image declares
-    {path[, path_night], alt}.
+def _art_slots(ev: "dict[str, Any] | None") -> "dict[str, dict[str, Any]]":
+    """ИЗОБРАЖЕНИЯ ПОСАДОЧНОЙ — ОДИН ДОМ: `ev.landing_art: {слот: {path[, path_night], alt[, alt_night],
+    loading}}`. Слот — ИМЯ МЕСТА, а не вид картинки; места знает рендерер (`_render_art_slot`), а
+    какая картинка стоит в месте — данные события. Прежний `landing_footer_image` был ЧАСТНЫМ
+    случаем этого же (слот `footer`): отдельный ключ на каждое место заводил бы по рендереру на
+    место. Слот без `path` — места нет (дыра видима, не закрашивается)."""
+    raw = (ev or {}).get("landing_art") if isinstance(ev, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, dict) and v.get("path")}
 
-    Day/night variants — when path_night provided, both <img> rendered;
-    CSS [data-theme] selectors show one and hide the other (small bytes cost
-    < theme-swap-via-JS complexity OR re-render-on-theme-toggle).
-    Sits AFTER content blocks BEFORE legal-min (Inv-SITE-trust-base preserved).
-    """
-    _raw_ev = ctx.ev if isinstance(ctx.ev, dict) else {}
-    img_cfg = _raw_ev.get("landing_footer_image") or {}
-    if not isinstance(img_cfg, dict) or not img_cfg.get("path"):
-        return []
-    path = str(img_cfg["path"]).strip().lstrip("/")
-    path_night = str(img_cfg.get("path_night") or "").strip().lstrip("/")
-    alt = str(img_cfg.get("alt") or "").strip()
-    # alt_night optional — night variant may show different object (admin
-    # 2026-05-13 «другой объект»); falls back к day alt when not declared.
-    alt_night = str(img_cfg.get("alt_night") or alt).strip()
+
+def _art_paths(ev: "dict[str, Any] | None") -> "list[str]":
+    """Все пути растров, объявленные событием, относительно корня сайта — для зеркала ассетов."""
+    return [v for cfg in _art_slots(ev).values() for k in ("path", "path_night")
+            if (v := str(cfg.get(k) or "").strip().lstrip("/"))]
+
+
+def _render_art_slot(ctx: "_LandingCtx", slot: str) -> str:
+    """Изображение в слоте посадочной (`landing_art.<slot>`) — ОДИН рендерер всех мест: шапка
+    (`hero_banner`), разделители (`frieze`, `signup_top`, `signup_bottom`), низ страницы (`footer`).
+    Admin 2026-05-13 («в самый низ Посадочной», «футер ночной темы») — первый слот; принципал
+    2026-10-14/15 — остальные для Бухары.
+
+    Форма — дело стилей (`styles.css` `.landing-art[data-art=…]`), здесь только носитель: фигура
+    с `data-art` = имя слота. Дневной/ночной растры — два `<img>` (`theme-day`/`theme-night`),
+    показ решает `[data-theme]`; без `path_night` растр один (стиль слота вправе адаптировать его
+    к ночи). Пустой `alt` объявляет растр ДЕКОРАТИВНЫМ — контейнер `aria-hidden`. Размер измерен у
+    файла (CLS, закон «растр не шире натурального»). Нет слота — пустая строка."""
+    cfg = _art_slots(ctx.ev).get(slot)
+    if not cfg:
+        return ""
+    path = str(cfg["path"]).strip().lstrip("/")
+    path_night = str(cfg.get("path_night") or "").strip().lstrip("/")
+    alt = str(cfg.get("alt") or "").strip()
+    # alt_night — ночной растр может показывать ДРУГОЙ предмет (admin 2026-05-13 «другой объект»).
+    alt_night = str(cfg.get("alt_night") or alt).strip()
+    loading = "eager" if str(cfg.get("loading") or "lazy").strip() == "eager" else "lazy"
     root = str((ctx.d or {}).get("_asset_root") or "")
 
     def _im(cls: str, src: str, a: str) -> str:
         wh = _measured_size(src, root)
         dims = f' width="{wh[0]}" height="{wh[1]}"' if wh else ""
-        return f'<img{cls} src="/{_t(src)}" alt="{_t(a)}"{dims} loading="lazy" decoding="async">'
+        return (f'<img{cls} src="/{_t(src)}" alt="{_t(a)}"{dims} '
+                f'loading="{loading}" decoding="async">')
 
     cap = _natural_cap((path, root), (path_night, root))
-    if path_night:
-        return [
-            f'<figure class="landing-footer-image"{cap}>'
-            + _im(' class="theme-day"', path, alt)
-            + _im(' class="theme-night"', path_night, alt_night)
-            + '</figure>'
-        ]
-    return [f'<figure class="landing-footer-image"{cap}>' + _im("", path, alt) + '</figure>']
+    hidden = "" if alt else ' aria-hidden="true"'
+    body = (_im(' class="theme-day"', path, alt) + _im(' class="theme-night"', path_night, alt_night)
+            if path_night else _im("", path, alt))
+    return (f'<figure class="landing-art" data-art="{_t(slot)}"'
+            f'{" data-night-adapt" if not path_night else ""}{cap}{hidden}>{body}</figure>')
+
+
+def _render_landing_footer_image(ctx: "_LandingCtx") -> "list[str]":
+    """Низ страницы между блоками содержания и юридическим подвалом — слот `footer`."""
+    html = _render_art_slot(ctx, "footer")
+    return [html] if html else []
+
+
+def _rule_html(glyph: Any) -> str:
+    """Линия со знаком; знак — ДАТУМ Спеки рода."""
+    return ('<div class="arch-rule" aria-hidden="true"><span class="rule-line"></span>'
+            f'<span class="rule-glyph">{_t(str(glyph))}</span><span class="rule-line"></span></div>')
+
+
+#: Вид разделителя ↦ как его реализовать из ЗНАЧЕНИЯ ключа вида в Спеке рода. Ключ вида в Спеке
+#: (`art`/`glyph`) выбирает реализатор; новый вид — строка здесь и объявление в Спеке, без ветвления.
+_DIVIDER_REALIZERS: "dict[str, Callable[[_LandingCtx, Any], str]]" = {
+    "art": lambda ctx, v: _render_art_slot(ctx, str(v)),
+    "glyph": lambda ctx, v: _rule_html(v),
+}
+
+
+def _divider_html(ctx: "_LandingCtx", kind: str) -> str:
+    """Разделитель глав по ВИДУ из Спеки рода (`landing.dividers.kinds.<вид>`): `{art: <слот>}` —
+    картинка слота события (слота нет — разделителя нет), `{glyph: …}` — линия со знаком. Чистая
+    функция (ctx, вид) ↦ HTML: свёртка объявления через `_DIVIDER_REALIZERS`."""
+    spec = ((((_genus_landing(_genus_name(ctx.ev)) or {}).get("dividers") or {}).get("kinds") or {})
+            .get(kind) or {})
+    return "".join(_DIVIDER_REALIZERS[k](ctx, v) for k, v in spec.items() if k in _DIVIDER_REALIZERS)
+
+
+def _dividers_before(ctx: "_LandingCtx", role: str) -> str:
+    """Разделитель ПЕРЕД первой секцией роли — `landing.dividers.before: [{role, kind}]` рода
+    (ключ — роль, как у `roles`: заголовок — слово автора, граница глав — норма рода)."""
+    if not role:
+        return ""
+    rows = (((_genus_landing(_genus_name(ctx.ev)) or {}).get("dividers") or {}).get("before") or [])
+    return "".join(_divider_html(ctx, str(r.get("kind") or ""))
+                   for r in rows if isinstance(r, dict) and r.get("role") == role)
 
 
 def _render_legal(ctx: "_LandingCtx") -> "list[str]":
@@ -5238,6 +5304,7 @@ def p_event_landing(d: dict[str, Any], ev: dict[str, Any]) -> str:
         # сохранён выше как исторический тумблер прежнего overlay-слоя.
         cookie_banner_enabled=False,
         slug=(ev.get("id") if isinstance(ev, dict) else getattr(ev, "id", "")) or "",
+        event=(ev.get("id") if isinstance(ev, dict) else getattr(ev, "id", "")) or "",
     )
 
 
@@ -6341,55 +6408,90 @@ def discover_static_pages(site_dir: "str | Path") -> "list[tuple[str, Path]]":
 # пустые. Работа без σ ни из чего не выпадает: она просто не лежит ни в одном слое.
 
 
+class WorkBottom(NamedTuple):
+    """⊥ ВХОДА страницы: работа, которую этот рендер удержал, и КУДА она входит.
+
+    Inv-PS-refusal-grained: суждение ⊥ обязано ехать на значении и иметь КООРДИНАТУ страницы,
+    иначе санкция публикации либо не видит его вовсе (страница уходит в мир ТИХО ОБЕДНЁННОЙ —
+    замер 2026-10-15: ~280 работ без байтов рендиции, /art/ вместо 93+ изображений), либо
+    держит весь сайт. Работа входит в /art (W целиком) и в слой своей серии (σ⁻¹(series));
+    `series` = "" — работа без координаты серии, она лежит только в /art."""
+    series: str
+    reason: str
+
+
+class ResolvedWorks(NamedTuple):
+    """Работы показа вместе с тем, что при их разрешении оказалось ⊥ — ОДНО значение: ⊥
+    не «логируется рядом», а едет с работами к каждому потребителю (страница выводит из него
+    свои находки чистой функцией, `bottoms_for`)."""
+    works: "list[dict[str, Any]]"
+    bottoms: "tuple[WorkBottom, ...]"
+
+
+def _resolve_row(d: dict[str, Any], a: Any) -> "tuple[dict[str, Any] | None, WorkBottom | None]":
+    """Одна строка `artworks` ↦ (работа | ∅, ⊥ | ∅). Пара взаимоисключающая: удержанная
+    работа несёт причину, разрешённая — нет; строка, не называющая работы, — ни то ни другое."""
+    if not isinstance(a, dict):
+        return ({"file": str(a)}, None) if str(a).strip() else (None, None)
+    src = str(a.get("source") or "").strip()
+    if not (src and not a.get("file")):
+        return (dict(a), None) if a.get("file") else (None, None)
+    # РАБОТА, ОБЪЯВЛЕННАЯ АДРЕСОМ СОДЕРЖИМОГО (sha256 в CAS): имя файла у неё
+    # ВЫВОДИТСЯ — из рендиции (art_renditions), а не хранится второй раз. ⊥
+    # рендиции (байты сейчас недоступны) удерживает работу ИЗ ЭТОГО рендера
+    # вслух; носитель в мире не трогается (прежняя рендиция в деплое остаётся).
+    import art_renditions as _ar
+    import observation as _ob
+    # ЛЕНТА ПОКАЗЫВАЕТ ВИД, А НЕ СНИМОК. Снимок работы может нести набранный блок
+    # со сведениями о ней; их место — в ПОЛЯХ работы (entity-artwork::work_spec), и
+    # на ленте им делать нечего (принципал 2026-09-02: «Убери с самого изображения
+    # подпись. Без подписи же оно должно быть в /art»). Первый объявленный вид и
+    # есть канонический показ работы; холст — политика КАНАЛА, лента его не просит.
+    _views = a.get("views") or []
+    series = str(a.get("series") or "").strip()
+    # ПРАВИЛА ОБРАБОТКИ — У ОБЪЯВЛЕННОГО ГРАФА, а не собраны здесь. Здесь стояли два
+    # именованных `rule_for`, и ровно этот способ УЖЕ разошёлся: морфизм света
+    # (`art_light`) появился в цепи 2026-09-08 и в ЭТУ сборку не попал — Сайт отдавал
+    # бы работу иначе, чем канал, при том что рендиция у них одна.
+    import art_correction as _acr
+    _rules = _acr.declared(d, a)
+    if not isinstance(_rules, _ob.Confirmed):
+        # ⊥ ПРАВИЛ ЕСТЬ ⊥ РАБОТЫ, А НЕ «ОБРАБОТАТЬ НАПОЛОВИНУ»: частично приведённая
+        # работа неотличима снаружи от целой, и мир получил бы её молча.
+        _LOG.warning("artwork %s withheld — %s", src[:12], _rules.reason())
+        return None, WorkBottom(series, f"artwork {src[:12]} withheld — {_rules.reason()}")
+    r = _ar.rendition(src, view=(dict(_views[0]) if _views else None), rules=_rules.value)
+    if isinstance(r, _ob.Bottom):
+        _LOG.warning("artwork %s withheld from this render — %s", src[:12], r.reason())
+        return None, WorkBottom(series, f"artwork {src[:12]} withheld from this render — {r.reason()}")
+    return {**a, "file": r.value.filename, "rendition": r.value}, None
+
+
+def resolve_works(d: dict[str, Any]) -> ResolvedWorks:
+    """Работы показа + их ⊥ одним значением (чистая свёртка строк `artworks`)."""
+    rows = [_resolve_row(d, a) for a in d.get("artworks") or []]
+    return ResolvedWorks([w for w, _ in rows if w is not None],
+                         tuple(b for _, b in rows if b is not None))
+
+
 def artworks_of(d: dict[str, Any]) -> "list[dict[str, Any]]":
     """Работы владельца в ОДНОЙ форме — {file, series?, title?}.
 
     Голая строка есть работа без координаты серии (σ = ⊥) — это ЗАКОННАЯ форма, а не
     недоделка: рубрикация частична по условию задачи. Поэтому расширение данных
     МОНОТОННО: 95 существующих имён файлов остаются валидными, а появление серии у одной
-    работы не требует её появления у остальных."""
-    out: "list[dict[str, Any]]" = []
-    for a in d.get("artworks") or []:
-        if isinstance(a, dict):
-            src = str(a.get("source") or "").strip()
-            if src and not a.get("file"):
-                # РАБОТА, ОБЪЯВЛЕННАЯ АДРЕСОМ СОДЕРЖИМОГО (sha256 в CAS): имя файла у неё
-                # ВЫВОДИТСЯ — из рендиции (art_renditions), а не хранится второй раз. ⊥
-                # рендиции (байты сейчас недоступны) удерживает работу ИЗ ЭТОГО рендера
-                # вслух; носитель в мире не трогается (прежняя рендиция в деплое остаётся).
-                import art_renditions as _ar
-                import observation as _ob
-                # ЛЕНТА ПОКАЗЫВАЕТ ВИД, А НЕ СНИМОК. Снимок работы может нести набранный блок
-                # со сведениями о ней; их место — в ПОЛЯХ работы (entity-artwork::work_spec), и
-                # на ленте им делать нечего (принципал 2026-09-02: «Убери с самого изображения
-                # подпись. Без подписи же оно должно быть в /art»). Первый объявленный вид и
-                # есть канонический показ работы; холст — политика КАНАЛА, лента его не просит.
-                _views = a.get("views") or []
-                # ПРАВИЛА ОБРАБОТКИ — У ОБЪЯВЛЕННОГО ГРАФА, а не собраны здесь. Здесь стояли два
-                # именованных `rule_for`, и ровно этот способ УЖЕ разошёлся: морфизм света
-                # (`art_light`) появился в цепи 2026-09-08 и в ЭТУ сборку не попал — Сайт отдавал
-                # бы работу иначе, чем канал, при том что рендиция у них одна.
-                import art_correction as _acr
-                _rules = _acr.declared(d, a)
-                if not isinstance(_rules, _ob.Confirmed):
-                    # ⊥ ПРАВИЛ ЕСТЬ ⊥ РАБОТЫ, А НЕ «ОБРАБОТАТЬ НАПОЛОВИНУ»: частично приведённая
-                    # работа неотличима снаружи от целой, и мир получил бы её молча.
-                    _LOG.warning("artwork %s withheld — %s", src[:12], _rules.reason())
-                    continue
-                r = _ar.rendition(src, view=(dict(_views[0]) if _views else None),
-                                  rules=_rules.value)
-                if isinstance(r, _ob.Bottom):
-                    _LOG.warning("artwork %s withheld from this render — %s", src[:12], r.reason())
-                    continue
-                w = dict(a)
-                w["file"] = r.value.filename
-                w["rendition"] = r.value
-                out.append(w)
-            elif a.get("file"):
-                out.append(dict(a))
-        elif str(a).strip():
-            out.append({"file": str(a)})
-    return out
+    работы не требует её появления у остальных.
+
+    Только работы; ⊥ разрешения — в `resolve_works` (потребитель, чья страница зависит от
+    удержанных, обязан взять их оттуда и объявить в `Projection.bottoms`)."""
+    return resolve_works(d).works
+
+
+def bottoms_for(d: dict[str, Any], slug: "str | None" = None) -> "tuple[str, ...]":
+    """⊥ входа страницы /art (slug=None: пространство целиком) либо слоя /art/<slug> —
+    причины удержанных работ, лежащих в её носителе. Функция данных `d`, без состояния."""
+    return tuple(b.reason for b in resolve_works(d).bottoms
+                 if slug is None or b.series == slug)
 
 
 def _raw_works(d: dict[str, Any]) -> "list[dict[str, Any]]":
@@ -7512,10 +7614,18 @@ class Projection(NamedTuple):
     GET, деплой берёт его однажды; таблица выводится из того же d, что и рендер).
 
     `render` отдаёт текст (страница), байты (рендиция) или None — «сейчас не могу, носитель
-    мира не трогать» (⊥ вслух, не пустая страница)."""
+    мира не трогать» (⊥ вслух, не пустая страница).
+
+    `bottoms` — ⊥ ВХОДОВ этой проекции: причины, по которым её содержание сегодня БЕДНЕЕ
+    объявленного (удержанная работа и т.п.), чистая функция тех же данных, что и `render`.
+    Страница с непустыми `bottoms` — находка НА СВОЕЙ КООРДИНАТЕ (`file`), и санкция публикации
+    удерживает именно её (Inv-PS-refusal-grained: живая версия остаётся, остальные уходят).
+    ∅ — «входы целы», а не «не спрашивали»: проекция, зависящая от удерживаемых входов,
+    ОБЯЗАНА объявить их здесь."""
     label: str
     file: PurePosixPath
     render: "Callable[[], str | bytes | None]"
+    bottoms: "Callable[[], tuple[str, ...]]" = lambda: ()
 
     @property
     def address(self) -> str:
@@ -7632,15 +7742,19 @@ def owner_projections(d: dict[str, Any]) -> "list[Projection]":
     ]
     # ПОЛНОЕ ПРОСТРАНСТВО /art — проекция ТОЛЬКО при объявленных работах или сериях
     # (Inv-SITE-owner-projection-total): отсутствие данных ≠ пустая страница.
-    _has_art = bool(artworks_of(d)) or bool(art_series(d))
+    # ОБЪЯВЛЕННОЕ, а не разрешённое: проекция есть ⟺ её данные определены, и молчание хаба о
+    # байтах не вправе снять страницу (удержанная работа — ⊥ входа этой страницы, `bottoms`).
+    _has_art = bool(d.get("artworks")) or bool(art_series(d))
     if _has_art:
-        out.append(Projection("art", _page.Page("art").file, lambda: p_art(d)))
+        out.append(Projection("art", _page.Page("art").file, lambda: p_art(d),
+                              lambda: bottoms_for(d)))
         # СЛОИ РУБРИКАЦИИ — квантор по объявленному, а не условие в коде. Владелец без серий
         # не имеет этих проекций вовсе (Inv-SITE-owner-projection-total), и потому «если есть
         # рубрикация» из слова принципала никогда не становится ветвлением.
         for _s in art_series(d):
             out.append(Projection(f"art:{_s}", _page.Page(f"art/{_s}").file,
-                                  lambda sl=_s: p_art_series(d, sl)))
+                                  lambda sl=_s: p_art_series(d, sl),
+                                  lambda sl=_s: bottoms_for(d, sl)))
             # ОТСТАВКА АДРЕСА С НОСИТЕЛЕМ (p_redirect; subsystem-no-transliteration §2): переименование
             # серии (kartinki-na-kartone → cardboards, принципал 2026-09-08) оставляет мир со старым адресом.
             for _old in (series_record(d, _s) or {}).get("redirect_from") or []:
@@ -7730,6 +7844,15 @@ def owner_projections(d: dict[str, Any]) -> "list[Projection]":
     return out
 
 
+def input_bottoms(projections: "Iterable[Projection]") -> "dict[str, list[str]]":
+    """{носитель страницы (относительно корня рендера) ↦ ⊥ её входов}, только непустое.
+
+    Чистая свёртка над объявлением проекций (`Projection.bottoms`): координата — тот же
+    `file`, которым страница пишется в мир и которым её судит гейт публикации
+    (`site_page.Page.of_file`). Ключа нет ⟺ входы страницы целы."""
+    return {str(pr.file): list(b) for pr in projections if (b := pr.bottoms())}
+
+
 def retired_carriers(d: dict[str, Any]) -> "list[Path]":
     """Носители, которые обязаны ИСЧЕЗНУТЬ, — акт, а не проекция.
 
@@ -7745,9 +7868,18 @@ def retired_carriers(d: dict[str, Any]) -> "list[Path]":
 
 if __name__ == "__main__":
     d = load()
-    for _pr in owner_projections(d):
+    _projs = owner_projections(d)
+    for _pr in _projs:
         _page.write_carrier(ROOT / _pr.file, _pr.render())
         print(f"{_pr.label}: {_pr.file}")
+    # ⊥ ВХОДОВ страниц — ПУБЛИКАТОРУ, на их координатах (Inv-PS-refusal-grained). Граница
+    # процесса: значение, не доехавшее сюда, превратило бы обеднённую страницу в «чистую».
+    from config import SITE_INPUT_BOTTOMS_ENV as _bot_env
+    import os as _os
+    _bot_sink = _os.environ.get(_bot_env)
+    if _bot_sink:
+        Path(_bot_sink).write_text(_json.dumps(input_bottoms(_projs), ensure_ascii=False),
+                                   encoding="utf-8")   # imperative: io — граница подпроцесса, единственный канал значения к публикатору
     for _dead in retired_carriers(d):
         if _dead.is_dir():
             import shutil as _sh
