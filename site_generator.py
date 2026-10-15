@@ -4090,8 +4090,10 @@ def _render_header(ctx: "_LandingCtx") -> "list[str]":
                     nm_credit = str(nm_ins)
                 _nm, lk = _person_display(d, pid)
                 safe_lk = _u(lk)
+                # Имя ВЛАДЕЛЬЦА ссылкой здесь не становится: где и сколько раз оно ссылка, решает
+                # один дом — `owner_name_links` (заголовки он не трогает).
                 disp.append(f'<a href="{safe_lk}">{_t(nm_credit)}</a>'
-                            if safe_lk else _t(nm_credit))
+                            if safe_lk and pid != d.get("_owner") else _t(nm_credit))
             # Inv-TYPO-no-hanging-words: «С » preposition + «и » conjunction bind
             # via _NBSP — _typo regex requires trailing word, не работает на standalone
             # connector strings. Direct _NBSP application = «грамотная сквозная абстракция»:
@@ -4725,7 +4727,10 @@ def owner_name_links(d: dict[str, Any], html: str, *, here: str) -> str:
     быть ссылкой всюду, кроме того, что опубликовано на самом сайте Ольги»): предикат — хост страницы
     (`here`) отличен от хоста канона владельца. Зов — из проекции публикации вне сайта владельца
     (`broadcast_html.update_landing`, рядом с `owner_links_absolute`), флага нет; на хосте канона функция
-    тождественна."""
+    тождественна.
+    ОДИН РАЗ НА СТРАНИЦУ, И НЕ В ЗАГОЛОВКЕ (принципал 2026-10-15 о посадочной: «убери ссылку с Ольга РОЗЕТ,
+    оставь её только в следующем вхождении имени»): заголовок-кредит — подпись, а не переход; ссылкой
+    становится ПЕРВОЕ вхождение имени в тексте вне заголовков, прочие остаются текстом."""
     owner = str(d.get("_owner") or "")
     canon = str(_canonical(d) or "").rstrip("/")
     forms = _owner_name_forms(d, owner) if owner else []
@@ -4733,14 +4738,16 @@ def owner_name_links(d: dict[str, Any], html: str, *, here: str) -> str:
         return html
     pat = _re.compile("|".join(_NAME_GAP.join(_re.escape(w) for w in f.split()) for f in forms))
     href = _u(canon + "/")
-    link = lambda text: pat.sub(lambda mm: f'<a href="{href}">{mm.group(0)}</a>', text)
+    link = lambda text: pat.sub(lambda mm: f'<a href="{href}">{mm.group(0)}</a>', text, count=1)
     # Разметка размечена ОДНИМ разбором: (1) элемент, текст которого ссылкой не становится, — целиком:
     # сырой текст HTML (script, style, textarea, title: внутри него «<script» в строке JS — текст, и
     # пошаговый счёт тегов сбивался до конца документа — замер 2026-10-14, карточка организатора
     # после встроенного скрипта ссылки не получала) и уже стоящие <a>/<button> (<a> не вкладывается
     # по HTML); (2) прочий тег; (3) текст — только он и оборачивается.
-    unit = _re.compile(r"(?is)(<(script|style|textarea|title|a|button)\b[^>]*>.*?</\2\s*>)|(<[^>]*>)|([^<]+)")
-    return unit.sub(lambda m: link(m.group(4)) if m.group(4) else m.group(0), html)
+    unit = _re.compile(r"(?is)(<(script|style|textarea|title|a|button|h[1-6])\b[^>]*>.*?</\2\s*>)|(<[^>]*>)|([^<]+)")
+    units = list(unit.finditer(html))
+    first = next((i for i, m in enumerate(units) if m.group(4) and pat.search(m.group(4))), None)
+    return "".join(link(m.group(4)) if i == first else m.group(0) for i, m in enumerate(units))
 
 
 def owner_links_absolute(d: dict[str, Any], html: str) -> str:
