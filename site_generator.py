@@ -836,6 +836,16 @@ def _genus_name(ev: "dict[str, Any] | None") -> str:
     return _ob.fold(_event_genus(ev), lambda g: g, lambda _w: "", _bottom)
 
 
+def _list_marker(ev: "dict[str, Any] | None", role: str = "", block: str = "") -> "str | None":
+    """ЗНАК ПУНКТА СПИСКА — закон рода, по убыванию частности: знак роли (`roles[].marker`), знак
+    блока (`<block>.marker`, например `terms`), умолчание рода (`landing.list_marker`). Нет ни
+    одного — None (вид знака решают стили). Один решатель на все списки посадочной."""
+    land = _genus_landing(_genus_name(ev)) or {}
+    return (_role_value(ev, role, "marker")
+            or ((land.get(block) or {}).get("marker") if block else None)
+            or land.get("list_marker"))
+
+
 def _role_value(ev: "dict[str, Any] | None", role: str, key: str) -> Any:
     """СВОЙСТВО РОЛИ секции — у рода (`landing.roles` Спеки рода события). Свойство рода есть
     закон всего рода, а не умолчание, которое издание подавляет у себя. Нет роли или свойства — None."""
@@ -2272,6 +2282,32 @@ def stamp_form_addresses(html: str) -> str:
     return str(soup)
 
 
+@_functools.cache
+def _event_form_specs(event: str) -> "tuple[str, ...]":
+    """Спеки, объявившие себя оформлением события (`applies_to_event`), — пути от корня репо.
+    Связь объявлена самой Спекой, а не выведена из её имени."""
+    if not event:
+        return ()
+    import config as _cfg
+    import spec_data as _sd
+    return tuple(sorted(_cfg.relpath(p) for n, p in _sd._name_index().items()
+                        if str(_sd.frontmatter(n).get("applies_to_event") or "") == event))
+
+
+@_functools.cache
+def _derivation_stamp(owner: str, event: str) -> str:
+    """Печать производного (Спека derivation-stamp.md): страница выведена генератором из СОДЕРЖАНИЯ
+    (data.yaml владельца) и ФОРМЫ (таблица стилей владельца + Спеки оформления события). Источники —
+    канон владельца (`config.site_dir`), а не клон сборки, где генератор исполняется. Владелец не
+    выведен — ролей нет, но печать стоит: правка копии всё равно не дойдёт до мира."""
+    import config as _cfg
+    import derivation_stamp as _ds
+    site = _cfg.site_dir(owner) if owner else None
+    content = (_cfg.relpath(site / DATA.name),) if site else ()
+    form = (*((_cfg.relpath(site / "styles.css"),) if site else ()), *_event_form_specs(event))
+    return _ds.render("scripts/site_generator.py:_layout", {"content": content, "form": form}, ".html")
+
+
 def _layout(d: dict[str, Any], *, title: str, description: str, body: str,
             canonical: str | None = None,
             extra_head: str = "", footer: bool = True, structured: str | None = None,
@@ -2408,9 +2444,10 @@ def _layout(d: dict[str, Any], *, title: str, description: str, body: str,
     surface_attr = f' data-surface="{_t(surface)}"' if surface else ''
     # `data-event` — АДРЕС СОБЫТИЯ на корне: токены издания (Спека `event-<id>.md`, scope по этому
     # атрибуту) действуют только на странице своего события, хотя файл токенов владельца общий.
-    surface_attr += f' data-event="{_t(event)}"' if event else ''
+    event_attr = f' data-event="{_t(event)}"' if event else ''
     _page = f"""<!DOCTYPE html>
-<html lang="{_t(lang)}"{surface_attr}>
+{_derivation_stamp(str(d.get("_owner") or ""), str(event or ""))}
+<html lang="{_t(lang)}"{surface_attr}{event_attr}>
 <head>
 {head}
 </head>
@@ -3970,10 +4007,11 @@ def _render_header(ctx: "_LandingCtx") -> "list[str]":
     # primitive `_text_close_no_period` (list-shape sibling is `_drop_block_close_period`).
     top_banner_text = (m.top_banner if hasattr(m, "top_banner") else (m.get("top_banner") or "")) \
         or _genus_banner(d, ev)
-    if top_banner_text:
-        parts.append(f'<p class="top-banner">{_t(_text_close_no_period(top_banner_text))}</p>')
-    # Полоса шапки — слот `hero_banner` события (картинка, оформление — стили слота).
-    parts.extend(filter(None, (_render_art_slot(ctx, "hero_banner"),)))
+    # Полоса шапки — слот `hero_banner` события (картинка, оформление — стили слота) — стоит
+    # сразу под верхней строкой рода; один фрагмент потока, пустые члены не печатаются.
+    parts.append("".join((
+        f'<p class="top-banner">{_t(_text_close_no_period(top_banner_text))}</p>' if top_banner_text else "",
+        _render_art_slot(ctx, "hero_banner"))))
 
     # Cover-line — schema-driven catalogue eyebrow ABOVE h1. ALL-CAPS
     # tracked metadata strip («ДИЗАЙН-ПУТЕШЕСТВИЕ · 4 ДНЯ · ДО 12 ЧЕЛОВЕК
@@ -4298,8 +4336,8 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
         # чем не должно быть избыточности»; прежнее решение admin 2026-05-14 «дублировать элемент»
         # снято). Был флаг роли `price_repeat` — его объявлял только род design-travel.
         # Граница глав: разделитель рода стоит перед ПЕРВОЙ секцией роли (повторная роль — та же глава).
-        parts.extend(filter(None, (_dividers_before(ctx, role) if _first_of_role.get(role) == idx else "",)))
-        parts.append(f"<section><h2>{_t(t)}</h2>" if t and t.strip() else "<section>")
+        parts.append((_dividers_before(ctx, role) if _first_of_role.get(role) == idx else "")
+                     + (f"<section><h2>{_t(t)}</h2>" if t and t.strip() else "<section>"))
         # admin: «one breath per line» (per-line typography) + markdown links; {{name}}
         # placeholders resolved here. A section that is prose-only and «крупнее абзаца»
         # drops its terminal «.» (Inv-TYPO-no-terminal-period-block — same _drop_block_close_period
@@ -4319,7 +4357,7 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
         if items:
             # Знак пункта — СВОЙСТВО РОЛИ (`marker`, Спека рода), а не CSS-литерал: он едет данными в
             # `data-marker` каждого пункта; внешний вид знака — дело стилей.
-            _mk = _role_value(ctx.ev, role, "marker")
+            _mk = _list_marker(ctx.ev, role)
             _mk_attr = f' data-marker="{_t(str(_mk))}"' if _mk else ""
             lis = "".join(f"<li{_mk_attr}>{_breath(x, h_aug)}</li>" for x in items)
             parts.append(f"<ul>{lis}</ul>")
@@ -4479,10 +4517,11 @@ def _render_sections_and_programme(ctx: "_LandingCtx") -> "list[str]":
     _terms_claimed = ((_h_terms if _template_terms else "Условия и сроки")
                       in _admin_section_titles)
     if terms_items and not _terms_claimed:
-        parts.append(f'<section class="terms"><h2>{_t(_h_terms)}</h2><ul>')
-        for it in terms_items:
-            parts.append(f"<li>{h_aug(it)}</li>")
-        parts.append('</ul></section>')
+        _mk_terms = _list_marker(ctx.ev, block="terms")
+        _mk_terms_attr = f' data-marker="{_t(str(_mk_terms))}"' if _mk_terms else ""
+        parts.append(f'<section class="terms"><h2>{_t(_h_terms)}</h2><ul>'
+                     + "".join(f"<li{_mk_terms_attr}>{h_aug(it)}</li>" for it in terms_items)
+                     + '</ul></section>')
     return parts
 
 
@@ -4758,8 +4797,8 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     s_note = signup.note if hasattr(signup, "note") else signup.get("note", "")
     s_cta = signup.cta_label if hasattr(signup, "cta_label") else signup.get("cta_label", "Оставить email")
     # Разделители вокруг заявки — слоты `signup_top`/`signup_bottom` события (разные: принципал 2026-10-14).
-    parts.append(_render_art_slot(ctx, "signup_top"))
-    parts.append(f'<section class="signup-wrap"><h2 id="signup-h">{inline(s_title)}</h2>')
+    parts.append(_render_art_slot(ctx, "signup_top")
+                 + f'<section class="signup-wrap"><h2 id="signup-h">{inline(s_title)}</h2>')
     if s_note:
         parts.append(f'<p>{inline(s_note)}</p>')
     ev_label = f"{m.title if hasattr(m,'title') else m.get('title','Событие')} {date_str}".strip()
@@ -4789,8 +4828,7 @@ def _render_signup(ctx: "_LandingCtx") -> "list[str]":
     _consent = _cookie_banner(ctx.d, placement="inline") if _page_needs_consent() else ""
     if _consent:
         parts.append(_consent)
-    parts.append("</section>")
-    parts.append(_render_art_slot(ctx, "signup_bottom"))
+    parts.append("</section>" + _render_art_slot(ctx, "signup_bottom"))
     return parts
 
 
@@ -5017,7 +5055,7 @@ def _art_slots(ev: "dict[str, Any] | None") -> "dict[str, dict[str, Any]]":
 def _art_paths(ev: "dict[str, Any] | None") -> "list[str]":
     """Все пути растров, объявленные событием, относительно корня сайта — для зеркала ассетов."""
     return [v for cfg in _art_slots(ev).values() for k in ("path", "path_night")
-            if (v := str(cfg.get(k) or "").strip().lstrip("/"))]
+            if (v := str(cfg.get(k) or "").strip())]
 
 
 def _render_art_slot(ctx: "_LandingCtx", slot: str) -> str:
@@ -5034,8 +5072,8 @@ def _render_art_slot(ctx: "_LandingCtx", slot: str) -> str:
     cfg = _art_slots(ctx.ev).get(slot)
     if not cfg:
         return ""
-    path = str(cfg["path"]).strip().lstrip("/")
-    path_night = str(cfg.get("path_night") or "").strip().lstrip("/")
+    path = str(cfg["path"]).strip()
+    path_night = str(cfg.get("path_night") or "").strip()
     alt = str(cfg.get("alt") or "").strip()
     # alt_night — ночной растр может показывать ДРУГОЙ предмет (admin 2026-05-13 «другой объект»).
     alt_night = str(cfg.get("alt_night") or alt).strip()

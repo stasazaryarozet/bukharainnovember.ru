@@ -779,7 +779,7 @@ figure svg { display: block; width: 100%; height: auto; }
 }
 .landing-art[data-art="hero_banner"] img {
   width: 100%;
-  max-width: 1440px;
+  max-width: var(--natural-w, 100%);
   min-width: 760px;
   height: clamp(75px, 12vw, 135px);
   object-fit: cover;
@@ -841,7 +841,7 @@ figure svg { display: block; width: 100%; height: auto; }
   gap: 16px;
 }
 .arch-rule .rule-line { flex: 1; height: 1px; background: var(--rule); }
-.arch-rule .rule-glyph { font-size: 0.72rem; color: var(--accent); letter-spacing: 0.25em; line-height: 1; }
+.arch-rule .rule-glyph { font-size: calc(var(--fs-xs) / var(--fs-ratio)); color: var(--accent); line-height: var(--lh-solid); }
 
 /* ══════════════════════════════════════════════════════════════════════
    EDITORIAL SURFACE · SWISS-MODERNIST · ARCHITECTURAL
@@ -1735,10 +1735,10 @@ figure svg { display: block; width: 100%; height: auto; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1;
+  line-height: var(--lh-solid);
   color: var(--accent);
 }
-.article-wrapper section ul li[data-marker="*"]::before { transform: translateY(0.18em); font-weight: 600; font-size: 1.25em; }
+.article-wrapper section ul li[data-marker="*"]::before { transform: translateY(0.18em); font-weight: 600; font-size: calc(1em * var(--fs-ratio)); }
 .article-wrapper section ul li[data-marker="+"]::before,
 .article-wrapper section ul li[data-marker="−"]::before { transform: translateY(0.02em); font-weight: 600; }
 .article-wrapper strong { font-weight: var(--strong-weight, bolder); font-style: normal; color: var(--ink); }
