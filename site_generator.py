@@ -4698,7 +4698,7 @@ def owner_link(d: dict[str, Any], address: str) -> str:
     points at nothing, and a copy there would be a second home (an orphan of the world). The footer's links
     (`owner_links_absolute`, the publish pass) and the consent label's link both come through here."""
     canon = str(_canonical(d) or "").rstrip("/")
-    own = {pr.address for pr in owner_projections(d) if pr.label not in ("site", "404")}
+    own = {pr.address for pr in owner_projections(d, assets=False) if pr.label not in ("site", "404")}
     return f"{canon}{address}" if canon and address in own else address
 
 
@@ -7758,7 +7758,7 @@ def _legal_document_projections(d: dict[str, Any], sections: Any) -> "list[Proje
     return out
 
 
-def owner_projections(d: dict[str, Any]) -> "list[Projection]":
+def owner_projections(d: dict[str, Any], *, assets: bool = True) -> "list[Projection]":
     """ЕДИНСТВЕННАЯ деривация «что владелец публикует СОБОЙ» — π и F одной функцией.
 
     КОРЕНЬ (замерено 2026-08-10). Множество собственных проекций жило ДВУМЯ рукописными
@@ -7809,7 +7809,13 @@ def owner_projections(d: dict[str, Any]) -> "list[Projection]":
         # РЕНДИЦИИ РАБОТ, ОБЪЯВЛЕННЫХ АДРЕСОМ СОДЕРЖИМОГО, — проекции ТОГО ЖЕ набора: байты
         # растра выводятся из CAS (art_renditions), а не лежат вне контура. Носитель — байты;
         # ⊥ байтов (хаб не ответил) оставляет носитель мира как есть (write_carrier: None = не трогать).
-        for _w in artworks_of(d):
+        # АССЕТЫ — ОТДЕЛЬНАЯ ОСЬ, А НЕ ПОБОЧНЫЙ ЭФФЕКТ ПЕРЕЧИСЛЕНИЯ. Имя проекции ассета
+        # выводится из БАЙТОВ (`rendition.filename`), поэтому перечисление «какие страницы у
+        # владельца есть» тянуло за собой разрешение байтов ВСЕХ работ — с сетью: замер
+        # 2026-11-02, публикация посадочной 25+ мин, 324 `peer_cat`, и всё это ради адреса
+        # ссылки (`owner_link` спрашивает только `.address`). Страницы и ассеты — разные
+        # ответы на разные вопросы; `assets=False` — перечислителю адресов.
+        for _w in (artworks_of(d) if assets else ()):
             _r = _w.get("rendition")
             if _r is not None:
                 out.append(Projection(f"art-img:{_r.filename}", PurePosixPath("art/img") / _r.filename,
@@ -7843,7 +7849,10 @@ def owner_projections(d: dict[str, Any]) -> "list[Projection]":
         # отказывает всей странице. Квантор — по объявленным предметам проекции, не по условию.
         try:
             import art_broadcast as _ab
-            for _s in _ab.subjects(d):
+            # ТА ЖЕ ОСЬ, ЧТО У РАБОТ: кадры — ассеты, их имена выводятся из байтов, и
+            # перечислителю АДРЕСОВ они не нужны (см. `assets`). Без этого `owner_link`
+            # спрашивал «есть ли страница /art» ценой разрешения байтов всех кадров.
+            for _s in (_ab.subjects(d) if assets else ()):
                 for _w2, _v in _ab.frames(d, _s):
                     _src = str(_w2.get("source") or "")
                     if not _src:
