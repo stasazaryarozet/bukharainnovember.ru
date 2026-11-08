@@ -6144,11 +6144,13 @@ def derived_slots(d: "dict[str, Any] | None") -> "dict[str, str]":
         return out
     # СРОК ДОСТУПА — ОДИН ДОМ: число — `legal.access.min_term.months` записи владельца (по
     # нему же живёт ссылка доступа, access_grant.access_term_s), формы — text-site::
-    # access_term_forms. Нет числа — слота нет, и strict роняет сборку оферты вслух.
-    _months = _path_text(_gp(d, "legal.access.min_term.months"))
-    if _months and _months.isdigit():
-        _forms = _site_ed().get("access_term_forms") or []
-        out["legal.access.min_term.text"] = f"{int(_months)} {_ns._plural(int(_months), _forms)}"
+    # access_term_forms. Фраза — ТА ЖЕ функция, что у письма (`access_term_text`), а не
+    # второе склонение здесь. Нет числа — слота нет, и strict роняет сборку оферты вслух.
+    try:
+        from access_grant import access_term_text as _access_term_text
+        out["legal.access.min_term.text"] = _access_term_text(d)
+    except ValueError:
+        pass
     from owner_data import owner_from_record as _owner_from_record
     from offer_algebra import offer_totals as _offer_totals
 
